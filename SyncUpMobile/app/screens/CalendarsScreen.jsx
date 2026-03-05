@@ -171,6 +171,12 @@ export default function CalendarsScreen({ authToken, onCalendarSelect }) {
         </View>
       )}
 
+      {/* Shared Calendars Section */}
+      <View style={{ flex: 0.70 }}>
+        <Text style={styles.sectionHeading}>SHARED CALENDARS</Text>
+            <Text style={styles.emptyMessage}> No shared calendars yet. This feature is coming in a future update.</Text>
+      </View>
+
       {userCalendars.length === 0 && (
         <Text style={styles.emptyMessage}>
           No other calendars yet. Create one below.
