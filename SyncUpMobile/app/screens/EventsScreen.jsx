@@ -15,20 +15,41 @@ import BACKEND_URL from '../../config';
 
 // --- Calendar Grid Constants ---
 const HOUR_HEIGHT = 60;
-const GRID_START_HOUR = 0;   // Grid starts at 12am
-const GRID_END_HOUR = 24;    // Grid ends at 12am next day (full 24 hours)
-const DAYS_OF_WEEK = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const GRID_START_HOUR = 0;
+const GRID_END_HOUR = 24;
+const DAYS_OF_WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const GRID_HOURS = Array.from(
-  { length: GRID_END_HOUR - GRID_START_HOUR },
+  { length: GRID_END_HOUR - GRID_START_HOUR + 1 },
   (_, index) => GRID_START_HOUR + index
 );
+const TOTAL_GRID_HEIGHT = (GRID_END_HOUR - GRID_START_HOUR) * HOUR_HEIGHT;
+
+const WORKLOAD_OPTIONS = [
+  { label: 'Low', value: 'low' },
+  { label: 'Medium', value: 'medium' },
+  { label: 'High', value: 'high' }
+];
+
+const RECOVERY_OPTIONS = [
+  { label: 'None', value: 'none' },
+  { label: 'Short', value: 'short' },
+  { label: 'Long', value: 'long' }
+];
+
+const CONFIDENCE_OPTIONS = [
+  { label: 'Low', value: 'low' },
+  { label: 'Medium', value: 'medium' },
+  { label: 'High', value: 'high' }
+];
 
 
 // --- Helper Functions ---
 
 function getWeekDates(referenceDate) {
   const weekStart = new Date(referenceDate);
-  weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+  const dayOfWeek = weekStart.getDay();
+  const distanceFromMonday = (dayOfWeek === 0) ? 6 : dayOfWeek - 1;
+  weekStart.setDate(weekStart.getDate() - distanceFromMonday);
   return Array.from({ length: 7 }, (_, dayIndex) => {
     const day = new Date(weekStart);
     day.setDate(weekStart.getDate() + dayIndex);
@@ -46,11 +67,6 @@ function calculateEventPosition(event) {
   return { top, height };
 }
 
-/**
- * Groups overlapping events so they can be displayed side by side
- * Returns each event with a columnIndex and totalColumns value
- * used to calculate width and horizontal position
- */
 function resolveOverlappingEvents(events) {
   const resolvedEvents = [];
   const groups = [];
@@ -61,7 +77,6 @@ function resolveOverlappingEvents(events) {
 
   sorted.forEach(event => {
     const eventStart = new Date(event.start_time).getTime();
-
     let placedInGroup = false;
     for (const group of groups) {
       const groupEnd = Math.max(...group.map(e => new Date(e.end_time).getTime()));
@@ -71,33 +86,22 @@ function resolveOverlappingEvents(events) {
         break;
       }
     }
-
-    if (!placedInGroup) {
-      groups.push([event]);
-    }
+    if (!placedInGroup) groups.push([event]);
   });
 
   groups.forEach(group => {
     const totalColumns = group.length;
     group.forEach((event, index) => {
-      resolvedEvents.push({
-        ...event,
-        columnIndex: index,
-        totalColumns
-      });
+      resolvedEvents.push({ ...event, columnIndex: index, totalColumns });
     });
   });
 
   return resolvedEvents;
 }
-
-/**
- * Formats an hour number into a readable 12 hour time label
- * 0 = 12am, 12 = 12pm, 23 = 11pm
- */
 function formatHourLabel(hour) {
   if (hour === 0) return '12am';
   if (hour === 12) return '12pm';
+  if (hour === 24) return '12am';
   return hour < 12 ? `${hour}am` : `${hour - 12}pm`;
 }
 
@@ -105,12 +109,66 @@ function padToTwoDigits(number) {
   return String(number).padStart(2, '0');
 }
 
+/**
+ * Calculates the recovery bar height from recovery_time and workload_intensity.
+ */
+function calculateRecoveryBarHeight(recoveryTime, workloadIntensity) {
+  const baseHeightMap = { none: 0, short: 0.5 * HOUR_HEIGHT, long: 2 * HOUR_HEIGHT };
+  const workloadMultiplierMap = { low: 1, medium: 1.5, high: 2 };
+  const base = baseHeightMap[recoveryTime] ?? 0;
+  const multiplier = workloadMultiplierMap[workloadIntensity] ?? 1;
+  return base * multiplier;
+}
+
+/**
+ * Calculates the event block opacity from confidence_level.
+ * Lower confidence = more transparent block, signalling uncertain availability.
+ *   low    = 0.45 opacity
+ *   medium = 0.70 opacity
+ *   high   = 1.00 opacity (fully opaque)
+ */
+function calculateEventOpacity(confidenceLevel) {
+  const opacityMap = { low: 0.45, medium: 0.70, high: 1.0 };
+  return opacityMap[confidenceLevel] ?? 1.0;
+}
+
+/**
+ * Calculates the recovery bar opacity from confidence_level.
+ * Lower confidence = fainter recovery bar.
+ */
+function calculateRecoveryBarOpacity(confidenceLevel) {
+  const opacityMap = { low: 0.2, medium: 0.4, high: 0.6 };
+  return opacityMap[confidenceLevel] ?? 0.4;
+}
+
+
+// --- Label Selector Component ---
+function LabelSelector({ options, selected, onSelect, colour }) {
+  return (
+    <View style={styles.labelSelectorRow}>
+      {options.map(option => (
+        <TouchableOpacity
+          key={option.value}
+          style={[
+            styles.labelOption,
+            selected === option.value && { backgroundColor: colour, borderColor: colour }
+          ]}
+          onPress={() => onSelect(option.value)}
+        >
+          <Text style={[
+            styles.labelOptionText,
+            selected === option.value && styles.labelOptionTextSelected
+          ]}>
+            {option.label}
+          </Text>
+        </TouchableOpacity>
+      ))}
+    </View>
+  );
+}
+
 
 // --- Time Slider Component ---
-/**
- * Two sliders for selecting hour (0-23) and minute (0-55 in steps of 5)
- * Displays the selected time in a readable 12 hour format
- */
 function TimeSliderInput({ label, hour, minute, onHourChange, onMinuteChange, colour }) {
   return (
     <View style={styles.timeSliderContainer}>
@@ -162,17 +220,10 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
 
   const [eventsList, setEventsList] = useState([]);
   const [currentWeekDate, setCurrentWeekDate] = useState(new Date());
-
-  // Controls visibility of the create event overlay
   const [isCreateOverlayVisible, setIsCreateOverlayVisible] = useState(false);
-
-  // Controls visibility of the edit event overlay
   const [isEditOverlayVisible, setIsEditOverlayVisible] = useState(false);
-
-  // Stores the event currently being edited
   const [eventBeingEdited, setEventBeingEdited] = useState(null);
 
-  // Shared form state used by both create and edit overlays
   const [selectedDateString, setSelectedDateString] = useState('');
   const [pickerMonth, setPickerMonth] = useState(new Date().getMonth());
   const [pickerYear, setPickerYear] = useState(new Date().getFullYear());
@@ -185,7 +236,11 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
   const [endHour, setEndHour] = useState(10);
   const [endMinute, setEndMinute] = useState(0);
 
-  // Reference to the ScrollView so we can scroll it programmatically on load
+  // Context-aware availability state
+  const [workloadIntensity, setWorkloadIntensity] = useState('medium');
+  const [recoveryTime, setRecoveryTime] = useState('none');
+  const [confidenceLevel, setConfidenceLevel] = useState('high');
+
   const gridScrollRef = useRef(null);
 
   const calendarColour = selectedCalendar.colour || '#4A90E2';
@@ -195,11 +250,9 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
   const weekDates = getWeekDates(currentWeekDate);
   const todayDate = new Date();
 
-  // Fetch events and scroll to 7am row on initial load
   useEffect(() => {
     fetchCalendarEvents();
     setTimeout(() => {
-      // Scroll to 7am on load so the user sees a useful part of the day
       gridScrollRef.current?.scrollTo({ y: HOUR_HEIGHT * 7, animated: true });
     }, 300);
   }, []);
@@ -229,9 +282,6 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
     setCurrentWeekDate(nextWeek);
   };
 
-  /**
-   * Pre-fills the form with the tapped date and opens the create overlay
-   */
   const openCreateOverlay = (date) => {
     const dateString = `${date.getFullYear()}-${padToTwoDigits(date.getMonth() + 1)}-${padToTwoDigits(date.getDate())}`;
     setSelectedDateString(dateString);
@@ -243,18 +293,16 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
     setEventTitle('');
     setEventDescription('');
     setEventLocation('');
+    setWorkloadIntensity('medium');
+    setRecoveryTime('none');
+    setConfidenceLevel('high');
     setIsCreateOverlayVisible(true);
   };
 
-  /**
-   * Pre-fills the form with the existing event data and opens the edit overlay
-   * Called when the user taps an event block on the calendar grid
-   */
   const openEditOverlay = (event) => {
     const eventStart = new Date(event.start_time);
     const eventEnd = new Date(event.end_time);
     const dateString = `${eventStart.getFullYear()}-${padToTwoDigits(eventStart.getMonth() + 1)}-${padToTwoDigits(eventStart.getDate())}`;
-
     setEventBeingEdited(event);
     setSelectedDateString(dateString);
     setPickerYear(eventStart.getFullYear());
@@ -267,6 +315,9 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
     setEventTitle(event.title);
     setEventDescription(event.description || '');
     setEventLocation(event.location || '');
+    setWorkloadIntensity(event.workload_intensity || 'medium');
+    setRecoveryTime(event.recovery_time || 'none');
+    setConfidenceLevel(event.confidence_level || 'high');
     setIsEditOverlayVisible(true);
   };
 
@@ -280,21 +331,17 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
     setSelectedDateString(dateString);
   };
 
-  /**
-   * Builds the event payload sent to the backend from the current form state
-   */
   const buildEventPayload = () => ({
     title: eventTitle,
     description: eventDescription,
     location: eventLocation,
     start_time: `${selectedDateString}T${padToTwoDigits(startHour)}:${padToTwoDigits(startMinute)}:00`,
-    end_time: `${selectedDateString}T${padToTwoDigits(endHour)}:${padToTwoDigits(endMinute)}:00`
+    end_time: `${selectedDateString}T${padToTwoDigits(endHour)}:${padToTwoDigits(endMinute)}:00`,
+    workload_intensity: workloadIntensity,
+    recovery_time: recoveryTime,
+    confidence_level: confidenceLevel
   });
 
-  /**
-   * Validates the event form before creating or updating
-   * Returns true if valid, false if there are errors
-   */
   const validateEventForm = () => {
     if (!eventTitle) {
       alert('Event title is required');
@@ -314,10 +361,7 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
         `${BACKEND_URL}/api/calendars/${selectedCalendar.id}/events`,
         {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${authToken}`
-          },
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
           body: JSON.stringify(buildEventPayload())
         }
       );
@@ -340,10 +384,7 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
         `${BACKEND_URL}/api/calendars/${selectedCalendar.id}/events/${eventBeingEdited.id}`,
         {
           method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${authToken}`
-          },
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${authToken}` },
           body: JSON.stringify(buildEventPayload())
         }
       );
@@ -364,10 +405,7 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
     try {
       await fetch(
         `${BACKEND_URL}/api/calendars/${selectedCalendar.id}/events/${eventBeingEdited.id}`,
-        {
-          method: 'DELETE',
-          headers: { 'Authorization': `Bearer ${authToken}` }
-        }
+        { method: 'DELETE', headers: { 'Authorization': `Bearer ${authToken}` } }
       );
       setIsEditOverlayVisible(false);
       setEventBeingEdited(null);
@@ -377,9 +415,6 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
     }
   };
 
-  /**
-   * Filters the full events list to return only events on a specific date
-   */
   const getEventsForDay = (date) => {
     return eventsList.filter(event => {
       const eventDate = new Date(event.start_time);
@@ -391,10 +426,6 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
     });
   };
 
-  /**
-   * Formats a date string into a readable format for display in the overlay
-   * e.g. 2026-03-05 becomes Thursday 5 March 2026
-   */
   const formatDateForDisplay = (dateString) => {
     if (!dateString) return '';
     const [year, month, day] = dateString.split('-').map(Number);
@@ -403,12 +434,8 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
     });
   };
 
-  const monthLabel = currentWeekDate.toLocaleString('default', {
-    month: 'long', year: 'numeric'
-  });
+  const monthLabel = currentWeekDate.toLocaleString('default', { month: 'long', year: 'numeric' });
 
-  // Shared form JSX used in both create and edit overlays
-  // Extracted to avoid duplicating the same form twice
   const renderEventForm = () => (
     <>
       <Text style={styles.overlaySectionTitle}>DATE</Text>
@@ -428,10 +455,7 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
         </ScrollView>
 
         <ScrollView style={styles.datePickerColumn} showsVerticalScrollIndicator={false} nestedScrollEnabled>
-          {Array.from(
-            { length: new Date(pickerYear, pickerMonth + 1, 0).getDate() },
-            (_, i) => i + 1
-          ).map(day => (
+          {Array.from({ length: new Date(pickerYear, pickerMonth + 1, 0).getDate() }, (_, i) => i + 1).map(day => (
             <TouchableOpacity
               key={day}
               style={[styles.datePickerItem, pickerDay === day && { backgroundColor: calendarColour }]}
@@ -464,42 +488,55 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
       </Text>
 
       <Text style={styles.overlaySectionTitle}>DETAILS</Text>
-      <TextInput
-        style={styles.inputField}
-        placeholder="Title *"
-        value={eventTitle}
-        onChangeText={setEventTitle}
-      />
-      <TextInput
-        style={styles.inputField}
-        placeholder="Description (optional)"
-        value={eventDescription}
-        onChangeText={setEventDescription}
-      />
-      <TextInput
-        style={styles.inputField}
-        placeholder="Location (optional)"
-        value={eventLocation}
-        onChangeText={setEventLocation}
-      />
+      <TextInput style={styles.inputField} placeholder="Title *" value={eventTitle} onChangeText={setEventTitle} />
+      <TextInput style={styles.inputField} placeholder="Description (optional)" value={eventDescription} onChangeText={setEventDescription} />
+      <TextInput style={styles.inputField} placeholder="Location (optional)" value={eventLocation} onChangeText={setEventLocation} />
 
       <Text style={styles.overlaySectionTitle}>TIME</Text>
-      <TimeSliderInput
-        label="Start time"
-        hour={startHour}
-        minute={startMinute}
-        onHourChange={setStartHour}
-        onMinuteChange={setStartMinute}
-        colour={calendarColour}
-      />
-      <TimeSliderInput
-        label="End time"
-        hour={endHour}
-        minute={endMinute}
-        onHourChange={setEndHour}
-        onMinuteChange={setEndMinute}
-        colour={calendarColour}
-      />
+      <TimeSliderInput label="Start time" hour={startHour} minute={startMinute} onHourChange={setStartHour} onMinuteChange={setStartMinute} colour={calendarColour} />
+      <TimeSliderInput label="End time" hour={endHour} minute={endMinute} onHourChange={setEndHour} onMinuteChange={setEndMinute} colour={calendarColour} />
+
+      <Text style={styles.overlaySectionTitle}>AVAILABILITY CONTEXT</Text>
+
+      {/* Workload intensity — how draining the event is */}
+      <Text style={styles.contextLabel}>Workload intensity</Text>
+      <Text style={styles.contextDescription}>How demanding is this event?</Text>
+      <LabelSelector options={WORKLOAD_OPTIONS} selected={workloadIntensity} onSelect={setWorkloadIntensity} colour={calendarColour} />
+
+      {/* Recovery time — how long until available again after this event */}
+      <Text style={styles.contextLabel}>Recovery time needed</Text>
+      <Text style={styles.contextDescription}>How long do you need to recover after this event?</Text>
+      <LabelSelector options={RECOVERY_OPTIONS} selected={recoveryTime} onSelect={setRecoveryTime} colour={calendarColour} />
+
+      {/* Availability confidence — how likely to accept another event after this */}
+      <Text style={styles.contextLabel}>Availability confidence</Text>
+      <Text style={styles.contextDescription}>How likely are you to be available for another event after this one?</Text>
+      <LabelSelector options={CONFIDENCE_OPTIONS} selected={confidenceLevel} onSelect={setConfidenceLevel} colour={calendarColour} />
+
+      {/* Live preview of what these settings will look like on the calendar */}
+      <Text style={styles.overlaySectionTitle}>PREVIEW</Text>
+      <View style={styles.contextPreviewContainer}>
+        {/* Event block preview — opacity reflects confidence level */}
+        <View style={[styles.contextPreviewBlock, { backgroundColor: calendarColour, opacity: calculateEventOpacity(confidenceLevel) }]}>
+          <Text style={styles.contextPreviewBlockText}>{eventTitle || 'Event'}</Text>
+          <Text style={styles.contextPreviewBlockSubText}>{workloadIntensity} workload</Text>
+        </View>
+        {/* Recovery bar preview — height from recovery+workload, opacity from confidence */}
+        {calculateRecoveryBarHeight(recoveryTime, workloadIntensity) > 0 && (
+          <View style={[
+            styles.contextPreviewRecovery,
+            {
+              height: Math.min(calculateRecoveryBarHeight(recoveryTime, workloadIntensity), 60),
+              opacity: calculateRecoveryBarOpacity(confidenceLevel)
+            }
+          ]} />
+        )}
+        <Text style={styles.contextPreviewHint}>
+          {recoveryTime === 'none'
+            ? 'No recovery time shown'
+            : `Recovery bar: ${recoveryTime} × ${workloadIntensity} workload · fades with lower confidence`}
+        </Text>
+      </View>
     </>
   );
 
@@ -542,7 +579,7 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
               style={[styles.dayHeaderCell, { width: dayColumnWidth }]}
               onPress={() => openCreateOverlay(date)}
             >
-              <Text style={styles.dayHeaderName}>{DAYS_OF_WEEK[date.getDay()]}</Text>
+              <Text style={styles.dayHeaderName}>{DAYS_OF_WEEK[date.getDay() === 0 ? 6 : date.getDay() - 1]}</Text>
               <View style={[styles.dayHeaderNumber, isToday && { backgroundColor: calendarColour }]}>
                 <Text style={[styles.dayHeaderNumberText, isToday && styles.dayHeaderNumberToday]}>
                   {date.getDate()}
@@ -555,7 +592,7 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
 
       {/* Calendar Grid */}
       <ScrollView ref={gridScrollRef} style={styles.calendarGrid}>
-        <View style={{ flexDirection: 'row' }}>
+        <View style={{ flexDirection: 'row', height: TOTAL_GRID_HEIGHT }}>
 
           {/* Time Labels Column */}
           <View style={{ width: timeColumnWidth }}>
@@ -570,7 +607,7 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
           {weekDates.map((date, dayIndex) => {
             const dayEvents = resolveOverlappingEvents(getEventsForDay(date));
             return (
-              <View key={dayIndex} style={[styles.dayColumn, { width: dayColumnWidth }]}>
+              <View key={dayIndex} style={[ styles.dayColumn,{ width: dayColumnWidth, height: TOTAL_GRID_HEIGHT }]}>
                 {GRID_HOURS.map(hour => (
                   <View key={hour} style={[styles.hourGridLine, { height: HOUR_HEIGHT }]} />
                 ))}
@@ -580,32 +617,68 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
                   const eventWidth = dayColumnWidth / event.totalColumns;
                   const eventLeft = event.columnIndex * eventWidth;
 
+                  // Recovery bar: height = recovery_time × workload_intensity multiplier
+                  const recoveryBarHeight = calculateRecoveryBarHeight(event.recovery_time, event.workload_intensity);
+
+                  // Event block opacity: reflects availability confidence
+                  const eventOpacity = calculateEventOpacity(event.confidence_level);
+
+                  // Recovery bar opacity: also reflects availability confidence
+                  const recoveryBarOpacity = calculateRecoveryBarOpacity(event.confidence_level);
+
                   return (
-                    <TouchableOpacity
-                      key={event.id}
-                      style={[
-                        styles.eventBlock,
-                        {
-                          top,
-                          height,
-                          width: eventWidth - 2,
-                          left: eventLeft + 1,
-                          backgroundColor: calendarColour
-                        }
-                      ]}
-                      onPress={() => openEditOverlay(event)}
-                    >
-                      <Text style={styles.eventBlockTitle} numberOfLines={1}>
-                        {event.title}
-                      </Text>
-                      {height > 30 && (
-                        <Text style={styles.eventBlockTime} numberOfLines={1}>
-                          {new Date(event.start_time).toLocaleTimeString([], {
-                            hour: '2-digit', minute: '2-digit'
-                          })}
+                   <View key={event.id} style={{ position: 'absolute', top: 0, left: 0, right: 0 }}>
+
+                      {/* Event block — opacity reflects confidence level */}
+                      <TouchableOpacity
+                        style={[
+                          styles.eventBlock,
+                          {
+                            top,
+                            height,
+                            width: eventWidth - 2,
+                            left: eventLeft + 1,
+                            backgroundColor: calendarColour,
+                            opacity: eventOpacity
+                          }
+                        ]}
+                        onPress={() => openEditOverlay(event)}
+                      >
+                        <Text style={styles.eventBlockTitle} numberOfLines={1}>
+                          {event.title}
                         </Text>
+                        {height > 30 && (
+                          <Text style={styles.eventBlockTime} numberOfLines={1}>
+                            {new Date(event.start_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </Text>
+                        )}
+                        {height > 45 && (
+                          <Text style={styles.eventBlockContext} numberOfLines={1}>
+                            {event.workload_intensity} workload
+                          </Text>
+                        )}
+                      </TouchableOpacity>
+
+                      {/* Recovery bar — shown below event block
+                          Height = recovery_time × workload_intensity
+                          Opacity = confidence_level */}
+                      {recoveryBarHeight > 0 && (
+                        <View
+                          style={{
+                            position: 'absolute',
+                            top: top + height,
+                            left: eventLeft + 1,
+                            width: eventWidth - 2,
+                            height: Math.min(recoveryBarHeight, TOTAL_GRID_HEIGHT - (top + height)),
+                            backgroundColor: '#FF6B6B',
+                            opacity: recoveryBarOpacity,
+                            borderBottomLeftRadius: 4,
+                            borderBottomRightRadius: 4,
+                          }}
+                        />
                       )}
-                    </TouchableOpacity>
+
+                    </View>
                   );
                 })}
               </View>
@@ -619,16 +692,10 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
         <ScrollView contentContainerStyle={styles.overlayContainer} nestedScrollEnabled>
           <Text style={styles.overlayTitle}>New Event</Text>
           {renderEventForm()}
-          <TouchableOpacity
-            style={[styles.primaryButton, { backgroundColor: calendarColour }]}
-            onPress={handleCreateEvent}
-          >
+          <TouchableOpacity style={[styles.primaryButton, { backgroundColor: calendarColour }]} onPress={handleCreateEvent}>
             <Text style={styles.primaryButtonText}>Create Event</Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.cancelButton}
-            onPress={() => setIsCreateOverlayVisible(false)}
-          >
+          <TouchableOpacity style={styles.cancelButton} onPress={() => setIsCreateOverlayVisible(false)}>
             <Text style={styles.cancelButtonText}>Cancel</Text>
           </TouchableOpacity>
         </ScrollView>
@@ -639,22 +706,13 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
         <ScrollView contentContainerStyle={styles.overlayContainer} nestedScrollEnabled>
           <Text style={styles.overlayTitle}>Edit Event</Text>
           {renderEventForm()}
-          <TouchableOpacity
-            style={[styles.primaryButton, { backgroundColor: calendarColour }]}
-            onPress={handleUpdateEvent}
-          >
+          <TouchableOpacity style={[styles.primaryButton, { backgroundColor: calendarColour }]} onPress={handleUpdateEvent}>
             <Text style={styles.primaryButtonText}>Save Changes</Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.deleteButton}
-            onPress={handleDeleteEvent}
-          >
+          <TouchableOpacity style={styles.deleteButton} onPress={handleDeleteEvent}>
             <Text style={styles.deleteButtonText}>Delete Event</Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.cancelButton}
-            onPress={() => setIsEditOverlayVisible(false)}
-          >
+          <TouchableOpacity style={styles.cancelButton} onPress={() => setIsEditOverlayVisible(false)}>
             <Text style={styles.cancelButtonText}>Cancel</Text>
           </TouchableOpacity>
         </ScrollView>
@@ -683,69 +741,51 @@ const styles = StyleSheet.create({
   dayHeadersRow: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#eee' },
   dayHeaderCell: { alignItems: 'center', paddingVertical: 6 },
   dayHeaderName: { fontSize: 11, color: '#999', marginBottom: 4 },
-  dayHeaderNumber: {
-    width: 28, height: 28, borderRadius: 14,
-    alignItems: 'center', justifyContent: 'center'
-  },
+  dayHeaderNumber: { width: 28, height: 28, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
   dayHeaderNumberText: { fontSize: 14, color: '#333', fontWeight: '500' },
   dayHeaderNumberToday: { color: '#fff', fontWeight: 'bold' },
   calendarGrid: { flex: 1 },
-  timeLabel: {
-    justifyContent: 'flex-start', paddingTop: 4,
-    paddingRight: 4, alignItems: 'flex-end'
-  },
+  timeLabel: { justifyContent: 'flex-start', paddingTop: 4, paddingRight: 4, alignItems: 'flex-end' },
   timeLabelText: { fontSize: 10, color: '#999' },
   dayColumn: { borderLeftWidth: 1, borderLeftColor: '#f0f0f0', position: 'relative' },
   hourGridLine: { borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
-  eventBlock: {
-    position: 'absolute', borderRadius: 4,
-    padding: 3, overflow: 'hidden'
-  },
+  eventBlock: { position: 'absolute', borderRadius: 4, padding: 3, overflow: 'hidden' },
   eventBlockTitle: { fontSize: 11, color: '#fff', fontWeight: 'bold' },
   eventBlockTime: { fontSize: 10, color: '#fff', opacity: 0.9 },
+  eventBlockContext: { fontSize: 9, color: '#fff', opacity: 0.85 },
   overlayContainer: { padding: 24, paddingTop: 60 },
   overlayTitle: { fontSize: 24, fontWeight: 'bold', color: '#333', marginBottom: 20 },
-  overlaySectionTitle: {
-    fontSize: 13, fontWeight: '700', color: '#999',
-    marginBottom: 10, marginTop: 8
-  },
-  datePicker: {
-    flexDirection: 'row', borderWidth: 1, borderColor: '#eee',
-    borderRadius: 10, overflow: 'hidden', marginBottom: 8
-  },
+  overlaySectionTitle: { fontSize: 13, fontWeight: '700', color: '#999', marginBottom: 10, marginTop: 8 },
+  datePicker: { flexDirection: 'row', borderWidth: 1, borderColor: '#eee', borderRadius: 10, overflow: 'hidden', marginBottom: 8 },
   datePickerColumn: { flex: 1, maxHeight: 150 },
   datePickerItem: { padding: 10, alignItems: 'center' },
   datePickerItemText: { fontSize: 14, color: '#333' },
   datePickerItemSelected: { color: '#fff', fontWeight: 'bold' },
-  selectedDateDisplay: {
-    fontSize: 14, fontWeight: '600',
-    textAlign: 'center', marginBottom: 20
-  },
-  inputField: {
-    backgroundColor: '#f5f5f5', padding: 15, borderRadius: 10,
-    marginBottom: 12, fontSize: 16, borderWidth: 1, borderColor: '#ddd'
-  },
-  timeSliderContainer: {
-    backgroundColor: '#f9f9f9', borderRadius: 10, padding: 16,
-    marginBottom: 16, borderWidth: 1, borderColor: '#eee'
-  },
+  selectedDateDisplay: { fontSize: 14, fontWeight: '600', textAlign: 'center', marginBottom: 20 },
+  inputField: { backgroundColor: '#f5f5f5', padding: 15, borderRadius: 10, marginBottom: 12, fontSize: 16, borderWidth: 1, borderColor: '#ddd' },
+  timeSliderContainer: { backgroundColor: '#f9f9f9', borderRadius: 10, padding: 16, marginBottom: 16, borderWidth: 1, borderColor: '#eee' },
   timeSliderLabel: { fontSize: 14, fontWeight: '600', color: '#555', marginBottom: 4 },
   timeSliderDisplay: { fontSize: 22, fontWeight: 'bold', marginBottom: 12 },
   timeSliderSubLabel: { fontSize: 12, color: '#999', marginBottom: 2 },
   slider: { width: '100%', height: 40 },
   sliderRangeLabels: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
   sliderRangeText: { fontSize: 11, color: '#bbb' },
-  primaryButton: {
-    padding: 15, borderRadius: 10,
-    alignItems: 'center', marginTop: 8
-  },
+  primaryButton: { padding: 15, borderRadius: 10, alignItems: 'center', marginTop: 8 },
   primaryButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
-  deleteButton: {
-    padding: 15, borderRadius: 10, alignItems: 'center',
-    marginTop: 12, backgroundColor: '#fff',
-    borderWidth: 2, borderColor: '#ff4444'
-  },
+  deleteButton: { padding: 15, borderRadius: 10, alignItems: 'center', marginTop: 12, backgroundColor: '#fff', borderWidth: 2, borderColor: '#ff4444' },
   deleteButtonText: { color: '#ff4444', fontSize: 16, fontWeight: 'bold' },
   cancelButton: { alignItems: 'center', marginTop: 16, marginBottom: 40 },
-  cancelButtonText: { color: '#999', fontSize: 16 }
+  cancelButtonText: { color: '#999', fontSize: 16 },
+  labelSelectorRow: { flexDirection: 'row', marginBottom: 16 },
+  labelOption: { flex: 1, padding: 10, marginHorizontal: 4, borderRadius: 8, alignItems: 'center', borderWidth: 1.5, borderColor: '#ddd', backgroundColor: '#fff' },
+  labelOptionText: { fontSize: 14, color: '#666', fontWeight: '500' },
+  labelOptionTextSelected: { color: '#fff', fontWeight: 'bold' },
+  contextLabel: { fontSize: 14, fontWeight: '600', color: '#444', marginBottom: 2 },
+  contextDescription: { fontSize: 12, color: '#999', marginBottom: 8 },
+  contextPreviewContainer: { backgroundColor: '#f9f9f9', borderRadius: 10, padding: 12, marginBottom: 16, borderWidth: 1, borderColor: '#eee' },
+  contextPreviewBlock: { borderRadius: 4, padding: 8, marginBottom: 0 },
+  contextPreviewBlockText: { fontSize: 12, color: '#fff', fontWeight: 'bold' },
+  contextPreviewBlockSubText: { fontSize: 10, color: '#fff', opacity: 0.85 },
+  contextPreviewRecovery: { backgroundColor: '#FF6B6B', borderBottomLeftRadius: 4, borderBottomRightRadius: 4 },
+  contextPreviewHint: { fontSize: 11, color: '#999', marginTop: 8, fontStyle: 'italic' },
 });

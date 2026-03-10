@@ -116,3 +116,27 @@ class Event(database.Model):
         database.ForeignKey('calendar.calendar_id'),
         nullable=False
     )
+
+    # How mentally or physically demanding this event is
+    # Stored as a string: 'low', 'medium' or 'high'
+    workload_intensity = database.Column(
+        database.String(10),
+        nullable=False,
+        default='medium'
+    )
+
+    # How much recovery time the user needs after this event
+    # Stored as a string: 'none', 'short' or 'long'
+    recovery_time = database.Column(
+        database.String(10),
+        nullable=False,
+        default='none'
+    )
+
+    # How confident the user is that they will attend this event
+    # Stored as a string: 'low', 'medium' or 'high'
+    confidence_level = database.Column(
+        database.String(10),
+        nullable=False,
+        default='high'
+    )

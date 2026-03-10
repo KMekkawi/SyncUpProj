@@ -45,8 +45,12 @@ def get_calendar_events(calendar_id):
             'description': event.description,
             'start_time': event.start_time.isoformat(),
             'end_time': event.end_time.isoformat(),
-            'location': event.location
+            'location': event.location,
+            'workload_intensity': event.workload_intensity,
+            'recovery_time': event.recovery_time,
+            'confidence_level': event.confidence_level
         })
+     
 
     return jsonify(event_list), 200
 
@@ -101,6 +105,26 @@ def create_calendar_event(calendar_id):
         return jsonify({
             "error": "End time must be after start time"
         }), 400
+    
+        # Context-aware availability fields - default to medium/none/high if not provided
+    workload_intensity = request_data.get('workload_intensity', 'medium')
+    recovery_time = request_data.get('recovery_time', 'none')
+    confidence_level = request_data.get('confidence_level', 'high')
+
+    # Validate workload intensity value
+    valid_workload_values = ['low', 'medium', 'high']
+    if workload_intensity not in valid_workload_values:
+        return jsonify({"error": "Workload intensity must be low, medium or high"}), 400
+
+    # Validate recovery time value
+    valid_recovery_values = ['none', 'short', 'long']
+    if recovery_time not in valid_recovery_values:
+        return jsonify({"error": "Recovery time must be none, short or long"}), 400
+
+    # Validate confidence level value
+    valid_confidence_values = ['low', 'medium', 'high']
+    if confidence_level not in valid_confidence_values:
+        return jsonify({"error": "Confidence level must be low, medium or high"}), 400
 
     new_event = Event(
         title=event_title,
@@ -108,9 +132,12 @@ def create_calendar_event(calendar_id):
         start_time=event_start,
         end_time=event_end,
         location=event_location,
+        workload_intensity=workload_intensity,
+        recovery_time=recovery_time,
+        confidence_level=confidence_level,
         user_id=logged_in_user_id,
         calendar_id=calendar_id
-    )
+)
 
     database.session.add(new_event)
     database.session.commit()
@@ -163,6 +190,22 @@ def update_calendar_event(calendar_id, event_id):
 
     if 'end_time' in request_data:
         target_event.end_time = datetime.fromisoformat(request_data['end_time'])
+
+        # Validate and update context-aware fields if included in request
+    if 'workload_intensity' in request_data:
+        if request_data['workload_intensity'] not in ['low', 'medium', 'high']:
+            return jsonify({"error": "Workload intensity must be low, medium or high"}), 400
+        target_event.workload_intensity = request_data['workload_intensity']
+
+    if 'recovery_time' in request_data:
+        if request_data['recovery_time'] not in ['none', 'short', 'long']:
+            return jsonify({"error": "Recovery time must be none, short or long"}), 400
+        target_event.recovery_time = request_data['recovery_time']
+
+    if 'confidence_level' in request_data:
+        if request_data['confidence_level'] not in ['low', 'medium', 'high']:
+            return jsonify({"error": "Confidence level must be low, medium or high"}), 400
+        target_event.confidence_level = request_data['confidence_level']
 
     # Validate end time is still after start time after any updates
     if target_event.end_time <= target_event.start_time:
