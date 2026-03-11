@@ -6,9 +6,9 @@
 
 // The IP address must match the machine running the Flask backend
 // Port 8000 is used to avoid conflict with macOS AirPlay which uses port 5000
-//const BACKEND_URL = 'http://192.168.1.98:8000';
+const BACKEND_URL = 'http://192.168.1.98:8000';
 
-const BACKEND_URL = 'http://127.0.0.1:8000';
+//const BACKEND_URL = 'http://127.0.0.1:8000';
 
 
 export default BACKEND_URL;

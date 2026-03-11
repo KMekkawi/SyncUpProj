@@ -22,7 +22,6 @@ const GRID_HOURS = Array.from(
   { length: GRID_END_HOUR - GRID_START_HOUR + 1 },
   (_, index) => GRID_START_HOUR + index
 );
-const TOTAL_GRID_HEIGHT = (GRID_END_HOUR - GRID_START_HOUR) * HOUR_HEIGHT;
 
 const WORKLOAD_OPTIONS = [
   { label: 'Low', value: 'low' },
@@ -59,7 +58,7 @@ function getWeekDates(referenceDate) {
 
 function calculateEventPosition(event) {
   const eventStart = new Date(event.start_time);
-  const eventEnd = new Date(event.end_time);
+  const eventEnd = new Date(event.end_time);  
   const startMins = (eventStart.getHours() - GRID_START_HOUR) * 60 + eventStart.getMinutes();
   const endMins = (eventEnd.getHours() - GRID_START_HOUR) * 60 + eventEnd.getMinutes();
   const top = (startMins / 60) * HOUR_HEIGHT;
@@ -108,10 +107,7 @@ function formatHourLabel(hour) {
 function padToTwoDigits(number) {
   return String(number).padStart(2, '0');
 }
-
-/**
- * Calculates the recovery bar height from recovery_time and workload_intensity.
- */
+// Calculate recovery bar height based on recovery_time and workload_intensity
 function calculateRecoveryBarHeight(recoveryTime, workloadIntensity) {
   const baseHeightMap = { none: 0, short: 0.5 * HOUR_HEIGHT, long: 2 * HOUR_HEIGHT };
   const workloadMultiplierMap = { low: 1, medium: 1.5, high: 2 };
@@ -119,28 +115,6 @@ function calculateRecoveryBarHeight(recoveryTime, workloadIntensity) {
   const multiplier = workloadMultiplierMap[workloadIntensity] ?? 1;
   return base * multiplier;
 }
-
-/**
- * Calculates the event block opacity from confidence_level.
- * Lower confidence = more transparent block, signalling uncertain availability.
- *   low    = 0.45 opacity
- *   medium = 0.70 opacity
- *   high   = 1.00 opacity (fully opaque)
- */
-function calculateEventOpacity(confidenceLevel) {
-  const opacityMap = { low: 0.45, medium: 0.70, high: 1.0 };
-  return opacityMap[confidenceLevel] ?? 1.0;
-}
-
-/**
- * Calculates the recovery bar opacity from confidence_level.
- * Lower confidence = fainter recovery bar.
- */
-function calculateRecoveryBarOpacity(confidenceLevel) {
-  const opacityMap = { low: 0.2, medium: 0.4, high: 0.6 };
-  return opacityMap[confidenceLevel] ?? 0.4;
-}
-
 
 // --- Label Selector Component ---
 function LabelSelector({ options, selected, onSelect, colour }) {
@@ -169,6 +143,7 @@ function LabelSelector({ options, selected, onSelect, colour }) {
 
 
 // --- Time Slider Component ---
+
 function TimeSliderInput({ label, hour, minute, onHourChange, onMinuteChange, colour }) {
   return (
     <View style={styles.timeSliderContainer}>
@@ -216,6 +191,7 @@ function TimeSliderInput({ label, hour, minute, onHourChange, onMinuteChange, co
 
 
 // --- Main Screen Component ---
+
 export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
 
   const [eventsList, setEventsList] = useState([]);
@@ -224,6 +200,9 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
   const [isEditOverlayVisible, setIsEditOverlayVisible] = useState(false);
   const [eventBeingEdited, setEventBeingEdited] = useState(null);
 
+  // Controls which view is active: 'calendar' or 'availability'
+
+  const [activeView, setActiveView] = useState('calendar');
   const [selectedDateString, setSelectedDateString] = useState('');
   const [pickerMonth, setPickerMonth] = useState(new Date().getMonth());
   const [pickerYear, setPickerYear] = useState(new Date().getFullYear());
@@ -264,7 +243,16 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
         { headers: { 'Authorization': `Bearer ${authToken}` } }
       );
       const responseData = await response.json();
-      setEventsList(responseData);
+      console.log((responseData));
+      // Handle both a plain array and a wrapped object e.g. { events: [...] }
+      if (Array.isArray(responseData)) {
+        setEventsList(responseData);
+      } else if (responseData && Array.isArray(responseData.events)) {
+        setEventsList(responseData.events);
+      } else {
+        console.warn('Unexpected response shape, defaulting to empty list');
+        setEventsList([]);
+      }
     } catch (error) {
       console.error('Failed to fetch events:', error);
     }
@@ -300,10 +288,20 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
   };
 
   const openEditOverlay = (event) => {
-    const eventStart = new Date(event.start_time);
-    const eventEnd = new Date(event.end_time);
+    // Normalise field names, backend may return event_id instead of id,
+    // start_time/end_time may vary, log the raw event to help debug.
+    console.log('Opening edit overlay for event:', JSON.stringify(event));
+    const eventId = event.id ?? event.event_id;
+    const startTime = event.start_time ?? event.startTime ?? event.start;
+    const endTime = event.end_time ?? event.endTime ?? event.end;
+    if (!startTime || !endTime) {
+      alert('Could not read event times. Check console for details.');
+      return;
+    }
+    const eventStart = new Date(startTime);
+    const eventEnd = new Date(endTime);
     const dateString = `${eventStart.getFullYear()}-${padToTwoDigits(eventStart.getMonth() + 1)}-${padToTwoDigits(eventStart.getDate())}`;
-    setEventBeingEdited(event);
+    setEventBeingEdited({ ...event, id: eventId, start_time: startTime, end_time: endTime });
     setSelectedDateString(dateString);
     setPickerYear(eventStart.getFullYear());
     setPickerMonth(eventStart.getMonth());
@@ -416,6 +414,7 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
   };
 
   const getEventsForDay = (date) => {
+    if (!Array.isArray(eventsList)) return [];
     return eventsList.filter(event => {
       const eventDate = new Date(event.start_time);
       return (
@@ -435,6 +434,112 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
   };
 
   const monthLabel = currentWeekDate.toLocaleString('default', { month: 'long', year: 'numeric' });
+
+
+  //Builds per-column availability data for the heatmap view.
+ 
+  const buildAvailabilityGrid = () => {
+    return weekDates.map(date => {
+      const dayEvents = getEventsForDay(date);
+      if (dayEvents.length === 0) {
+        const emptySlots = Array(96).fill(null);
+        for (let s = 0; s < 24; s++) emptySlots[s] = { type: 'sleep' };
+        return emptySlots;
+      }
+
+      // 96 slots representing 15-minute intervals in a day
+      const slots = Array(96).fill(null);
+      for (let s = 0; s < 24; s++) {
+        slots[s] = { type: 'sleep' };
+      }
+
+      dayEvents.forEach(event => {
+        const eventStart = new Date(event.start_time);
+        const eventEnd = new Date(event.end_time);
+        const startSlot = Math.floor((eventStart.getHours() * 60 + eventStart.getMinutes()) / 15);
+        const endSlot = Math.ceil((eventEnd.getHours() * 60 + eventEnd.getMinutes()) / 15);
+
+        // Event slots
+        const workloadIntensityMap = { low: 0.4, medium: 0.7, high: 1.0 };
+        const eventIntensity = workloadIntensityMap[event.workload_intensity] ?? 1.0;
+        for (let s = startSlot; s < endSlot && s < 96; s++) {
+          slots[s] = { type: 'event', intensity: eventIntensity };
+        }
+
+        // Confidence affects recovery fade speed
+        const confidenceFadeValues = { low: 0.3, medium: 0.65, high: 1.0 };
+        const confidenceFade = confidenceFadeValues[event.confidence_level] ?? 1.0;
+
+        const recoveryMins = (calculateRecoveryBarHeight(event.recovery_time, event.workload_intensity) / HOUR_HEIGHT) * 60;
+        const recoverySlots = Math.ceil(recoveryMins / 15);
+
+        if (recoverySlots > 0) {
+          // Recovery gradient
+          for (let r = 0; r < recoverySlots; r++) {
+            const slot = endSlot + r;
+            if (slot >= 96) break;
+            const rawProgress = r / recoverySlots;
+            const progress = rawProgress * confidenceFade;
+            if (slots[slot] === null || (slots[slot].type === 'recovery' && progress < slots[slot].progress)) {
+              slots[slot] = { type: 'recovery', progress };
+            }
+          }
+        } else {
+          // No recovery period — confidence alone determines spill
+          // low = 2hrs of orange tail, medium = 1hr, high = nothing
+          const confidenceSpillMins = { low: 120, medium: 60, high: 0 };
+          const spillMins = confidenceSpillMins[event.confidence_level] ?? 0;
+          const spillSlots = Math.ceil(spillMins / 15);
+          for (let r = 0; r < spillSlots; r++) {
+            const slot = endSlot + r;
+            if (slot >= 96) break;
+            const rawProgress = r / spillSlots;
+            const progress = rawProgress * confidenceFade;
+            if (slots[slot] === null || (slots[slot].type === 'recovery' && progress < slots[slot].progress)) {
+              slots[slot] = { type: 'recovery', progress };
+            }
+          }
+        }
+      });
+
+      return slots;
+    });
+  };
+
+  //Converts an availability score (0.0=busy to 1.0=free) into an RGBA colour string.
+
+  const scoreToColour = (slot) => {
+    // null = fully available waking hours = your green
+    if (slot === null) return 'rgb(118,154,118)';
+
+    // Sleep hours (12am–6am) — light grey
+    if (slot.type === 'sleep') return 'rgb(220,220,220)';
+
+    // Event slots
+    if (slot.type === 'event') {
+      return `rgb(${210},${40},${45})`;
+    }
+
+    // Recovery slots — orange → yellow → green
+    if (slot.type === 'recovery') {
+      const { progress } = slot;
+      let r, g, b;
+      if (progress < 0.5) {
+        const t = progress / 0.5;
+        r = 230;
+        g = Math.round(110 + (220 - 110) * t);
+        b = 0;
+      } else {
+        const t = (progress - 0.5) / 0.5;
+        r = Math.round(230 + (80  - 230) * t);
+        g = Math.round(220 + (200 - 220) * t);
+        b = Math.round(0   + (80  - 0)   * t);
+      }
+      return `rgb(${r},${g},${b})`;
+    }
+
+    return 'rgb(8,142,1)';
+  };
 
   const renderEventForm = () => (
     <>
@@ -517,24 +622,27 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
       <Text style={styles.overlaySectionTitle}>PREVIEW</Text>
       <View style={styles.contextPreviewContainer}>
         {/* Event block preview — opacity reflects confidence level */}
-        <View style={[styles.contextPreviewBlock, { backgroundColor: calendarColour, opacity: calculateEventOpacity(confidenceLevel) }]}>
+        <View style={[styles.contextPreviewBlock, { backgroundColor: calendarColour }]}>
           <Text style={styles.contextPreviewBlockText}>{eventTitle || 'Event'}</Text>
           <Text style={styles.contextPreviewBlockSubText}>{workloadIntensity} workload</Text>
         </View>
-        {/* Recovery bar preview — height from recovery+workload, opacity from confidence */}
+        {/* Recovery bar preview — uses faded calendar colour */}
         {calculateRecoveryBarHeight(recoveryTime, workloadIntensity) > 0 && (
           <View style={[
             styles.contextPreviewRecovery,
             {
               height: Math.min(calculateRecoveryBarHeight(recoveryTime, workloadIntensity), 60),
-              opacity: calculateRecoveryBarOpacity(confidenceLevel)
+              backgroundColor: calendarColour,
+              opacity: 0.3,
             }
           ]} />
         )}
         <Text style={styles.contextPreviewHint}>
           {recoveryTime === 'none'
-            ? 'No recovery time shown'
-            : `Recovery bar: ${recoveryTime} × ${workloadIntensity} workload · fades with lower confidence`}
+            ? confidenceLevel !== 'high'
+              ? `Low confidence adds ${confidenceLevel === 'low' ? '2 hour' : '1 hour'} recovery tail`
+              : 'No recovery time shown'
+            : `Recovery bar: ${recoveryTime} × ${workloadIntensity} workload · confidence affects fade speed`}
         </Text>
       </View>
     </>
@@ -551,6 +659,26 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
         <Text style={styles.headerCalendarName}>{selectedCalendar.name}</Text>
         <TouchableOpacity onPress={() => openCreateOverlay(new Date())}>
           <Text style={[styles.headerAddButton, { color: calendarColour }]}>+ Add</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* View Tabs */}
+      <View style={styles.viewTabs}>
+        <TouchableOpacity
+          style={[styles.viewTab, activeView === 'calendar' && { borderBottomColor: calendarColour, borderBottomWidth: 2 }]}
+          onPress={() => setActiveView('calendar')}
+        >
+          <Text style={[styles.viewTabText, activeView === 'calendar' && { color: calendarColour, fontWeight: '700' }]}>
+            Calendar
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.viewTab, activeView === 'availability' && { borderBottomColor: calendarColour, borderBottomWidth: 2 }]}
+          onPress={() => setActiveView('availability')}
+        >
+          <Text style={[styles.viewTabText, activeView === 'availability' && { color: calendarColour, fontWeight: '700' }]}>
+            Availability
+          </Text>
         </TouchableOpacity>
       </View>
 
@@ -590,9 +718,10 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
         })}
       </View>
 
-      {/* Calendar Grid */}
+      {/* Calendar Grid — only shown in calendar tab */}
+      {activeView === 'calendar' && (
       <ScrollView ref={gridScrollRef} style={styles.calendarGrid}>
-        <View style={{ flexDirection: 'row', height: TOTAL_GRID_HEIGHT }}>
+        <View style={{ flexDirection: 'row' }}>
 
           {/* Time Labels Column */}
           <View style={{ width: timeColumnWidth }}>
@@ -607,27 +736,38 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
           {weekDates.map((date, dayIndex) => {
             const dayEvents = resolveOverlappingEvents(getEventsForDay(date));
             return (
-              <View key={dayIndex} style={[ styles.dayColumn,{ width: dayColumnWidth, height: TOTAL_GRID_HEIGHT }]}>
+              <View key={dayIndex} style={[styles.dayColumn, { width: dayColumnWidth }]}>
                 {GRID_HOURS.map(hour => (
                   <View key={hour} style={[styles.hourGridLine, { height: HOUR_HEIGHT }]} />
                 ))}
 
-                {dayEvents.map(event => {
+                {dayEvents.map((event, eventIndex) => {
                   const { top, height } = calculateEventPosition(event);
                   const eventWidth = dayColumnWidth / event.totalColumns;
                   const eventLeft = event.columnIndex * eventWidth;
 
                   // Recovery bar: height = recovery_time × workload_intensity multiplier
-                  const recoveryBarHeight = calculateRecoveryBarHeight(event.recovery_time, event.workload_intensity);
+                  const uncappedRecoveryHeight = calculateRecoveryBarHeight(event.recovery_time, event.workload_intensity);
 
-                  // Event block opacity: reflects availability confidence
-                  const eventOpacity = calculateEventOpacity(event.confidence_level);
-
-                  // Recovery bar opacity: also reflects availability confidence
-                  const recoveryBarOpacity = calculateRecoveryBarOpacity(event.confidence_level);
+                  // Prevent recovery bar overlapping next event
+                  let recoveryBarHeight = uncappedRecoveryHeight;
+                  if (uncappedRecoveryHeight > 0) {
+                    const eventEndMins = new Date(event.end_time).getHours() * 60 + new Date(event.end_time).getMinutes();
+                    const nextEvent = dayEvents
+                      .filter(other => {
+                        const otherStartMins = new Date(other.start_time).getHours() * 60 + new Date(other.start_time).getMinutes();
+                        return otherStartMins > eventEndMins;
+                      })
+                      .sort((a, b) => new Date(a.start_time) - new Date(b.start_time))[0];
+                    if (nextEvent) {
+                      const nextEventTop = calculateEventPosition(nextEvent).top;
+                      const maxRecoveryHeight = nextEventTop - (top + height);
+                      recoveryBarHeight = Math.min(uncappedRecoveryHeight, Math.max(maxRecoveryHeight, 0));
+                    }
+                  }
 
                   return (
-                   <View key={event.id} style={{ position: 'absolute', top: 0, left: 0, right: 0 }}>
+                    <View key={event.id} style={{ position: 'absolute', width: '100%', height: 0 }}>
 
                       {/* Event block — opacity reflects confidence level */}
                       <TouchableOpacity
@@ -638,8 +778,7 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
                             height,
                             width: eventWidth - 2,
                             left: eventLeft + 1,
-                            backgroundColor: calendarColour,
-                            opacity: eventOpacity
+                            backgroundColor: calendarColour
                           }
                         ]}
                         onPress={() => openEditOverlay(event)}
@@ -659,9 +798,8 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
                         )}
                       </TouchableOpacity>
 
-                      {/* Recovery bar — shown below event block
-                          Height = recovery_time × workload_intensity
-                          Opacity = confidence_level */}
+                      {/* Recovery bar — shown below event block, capped at next event start
+                          Uses a faded version of the calendar colour (50% opacity) */}
                       {recoveryBarHeight > 0 && (
                         <View
                           style={{
@@ -669,9 +807,9 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
                             top: top + height,
                             left: eventLeft + 1,
                             width: eventWidth - 2,
-                            height: Math.min(recoveryBarHeight, TOTAL_GRID_HEIGHT - (top + height)),
-                            backgroundColor: '#FF6B6B',
-                            opacity: recoveryBarOpacity,
+                            height: recoveryBarHeight,
+                            backgroundColor: calendarColour,
+                            opacity: 0.35,
                             borderBottomLeftRadius: 4,
                             borderBottomRightRadius: 4,
                           }}
@@ -686,6 +824,44 @@ export default function EventsScreen({ authToken, selectedCalendar, onBack }) {
           })}
         </View>
       </ScrollView>
+      )}
+
+      {/* Availability Heatmap — only shown in availability tab */}
+      {activeView === 'availability' && (
+      <ScrollView ref={gridScrollRef} style={styles.calendarGrid}>
+        <View style={{ flexDirection: 'row' }}>
+
+          {/* Time Labels Column */}
+          <View style={{ width: timeColumnWidth }}>
+            {GRID_HOURS.map(hour => (
+              <View key={hour} style={[styles.timeLabel, { height: HOUR_HEIGHT }]}>
+                <Text style={styles.timeLabelText}>{formatHourLabel(hour)}</Text>
+              </View>
+            ))}
+          </View>
+
+          {/* Heatmap Day Columns — each 15-min slot coloured by availability score */}
+          { buildAvailabilityGrid().map((slots, dayIndex) => (
+            <View key={dayIndex} style={[styles.dayColumn, { width: dayColumnWidth }]}>
+              {slots.map((score, slotIndex) => {
+                const colour = scoreToColour(score);
+                return (
+                  <View
+                    key={slotIndex}
+                    style={{
+                      height: HOUR_HEIGHT / 4,
+                      backgroundColor: colour ?? '#fff',
+                      borderBottomWidth: slotIndex % 4 === 3 ? 1 : 0,
+                      borderBottomColor: 'rgba(0,0,0,0.05)',
+                    }}
+                  />
+                );
+              })}
+            </View>
+          ))}
+        </View>
+      </ScrollView>
+      )}
 
       {/* Create Event Overlay */}
       <Modal visible={isCreateOverlayVisible} animationType="slide">
@@ -726,7 +902,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff' },
   header: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingHorizontal: 16, paddingTop: 60, paddingBottom: 12,
+    paddingHorizontal: 16, paddingTop: 15, paddingBottom: 12,
     backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#eee'
   },
   headerBackButton: { fontSize: 16, fontWeight: 'bold' },
@@ -786,6 +962,9 @@ const styles = StyleSheet.create({
   contextPreviewBlock: { borderRadius: 4, padding: 8, marginBottom: 0 },
   contextPreviewBlockText: { fontSize: 12, color: '#fff', fontWeight: 'bold' },
   contextPreviewBlockSubText: { fontSize: 10, color: '#fff', opacity: 0.85 },
-  contextPreviewRecovery: { backgroundColor: '#FF6B6B', borderBottomLeftRadius: 4, borderBottomRightRadius: 4 },
+  contextPreviewRecovery: { borderBottomLeftRadius: 4, borderBottomRightRadius: 4 },
   contextPreviewHint: { fontSize: 11, color: '#999', marginTop: 8, fontStyle: 'italic' },
+  viewTabs: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#eee', backgroundColor: '#fff' },
+  viewTab: { flex: 1, alignItems: 'center', paddingVertical: 10 },
+  viewTabText: { fontSize: 14, color: '#999', fontWeight: '500' },
 });
